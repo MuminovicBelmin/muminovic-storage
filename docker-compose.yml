@@ -1,0 +1,207 @@
+name: muminovic_cloud
+
+services:
+  db:
+    image: ${MARIADB_IMAGE}
+    container_name: muminovic_cloud_db
+    restart: unless-stopped
+    command:
+      - --transaction-isolation=READ-COMMITTED
+      - --binlog-format=ROW
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --skip-name-resolve
+    environment:
+      MARIADB_AUTO_UPGRADE: "1"
+      MARIADB_DATABASE: ${NC_DB_NAME}
+      MARIADB_USER: ${NC_DB_USER}
+      MARIADB_PASSWORD_FILE: /run/secrets/db_password
+      MARIADB_ROOT_PASSWORD_FILE: /run/secrets/db_root_password
+    secrets:
+      - db_password
+      - db_root_password
+    volumes:
+      - mariadb_data:/var/lib/mysql
+    networks:
+      - backend
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - mariadb-admin ping --host=127.0.0.1 --user=root --password="$$(cat /run/secrets/db_root_password)" --silent
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  valkey:
+    image: ${VALKEY_IMAGE}
+    container_name: muminovic_cloud_valkey
+    restart: unless-stopped
+    command: >-
+      sh -ec 'exec valkey-server --save "" --appendonly no --loglevel warning
+      --requirepass "$$(cat /run/secrets/valkey_password)"'
+    secrets:
+      - valkey_password
+    networks:
+      - backend
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - valkey-cli -a "$$(cat /run/secrets/valkey_password)" ping | grep -q PONG
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  tmp_init:
+    image: busybox:1.36
+    container_name: muminovic_cloud_tmp_init
+    restart: "no"
+    network_mode: none
+    command:
+      - sh
+      - -c
+      - mkdir -p /mnt/nextcloud-tmp && chown 33:33 /mnt/nextcloud-tmp && chmod 0770 /mnt/nextcloud-tmp
+    volumes:
+      - nextcloud_tmp:/mnt/nextcloud-tmp
+
+  app:
+    image: ${NEXTCLOUD_IMAGE}
+    container_name: muminovic_cloud_app
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
+      tmp_init:
+        condition: service_completed_successfully
+    ports:
+      - "127.0.0.1:17880:80"
+    environment:
+      MYSQL_HOST: db
+      MYSQL_DATABASE: ${NC_DB_NAME}
+      MYSQL_USER: ${NC_DB_USER}
+      MYSQL_PASSWORD_FILE: /run/secrets/db_password
+      NEXTCLOUD_ADMIN_USER: ${NEXTCLOUD_ADMIN_USER}
+      NEXTCLOUD_ADMIN_PASSWORD_FILE: /run/secrets/nextcloud_admin_password
+      NEXTCLOUD_TRUSTED_DOMAINS: ${NEXTCLOUD_HOSTNAME}
+      OVERWRITEHOST: ${NEXTCLOUD_HOSTNAME}
+      OVERWRITEPROTOCOL: https
+      OVERWRITECLIURL: https://${NEXTCLOUD_HOSTNAME}
+      NEXTCLOUD_INIT_HTACCESS: "true"
+      PHP_MEMORY_LIMIT: 1024M
+      PHP_UPLOAD_LIMIT: 1024G
+      PHP_OPCACHE_MEMORY_CONSUMPTION: 256
+      APACHE_BODY_LIMIT: "0"
+      REDIS_HOST: valkey
+      REDIS_HOST_PORT: 6379
+      REDIS_HOST_PASSWORD_FILE: /run/secrets/valkey_password
+      OBJECTSTORE_S3_BUCKET: ${OVH_S3_BUCKET}
+      OBJECTSTORE_S3_REGION: ${OVH_S3_REGION}
+      OBJECTSTORE_S3_HOST: ${OVH_S3_HOST}
+      OBJECTSTORE_S3_PORT: 443
+      OBJECTSTORE_S3_SSL: "true"
+      OBJECTSTORE_S3_USEPATH_STYLE: "false"
+      OBJECTSTORE_S3_AUTOCREATE: "false"
+      OBJECTSTORE_S3_STORAGE_CLASS: STANDARD
+      OBJECTSTORE_S3_KEY_FILE: /run/secrets/ovh_s3_key
+      OBJECTSTORE_S3_SECRET_FILE: /run/secrets/ovh_s3_secret
+      TMPDIR: /mnt/nextcloud-tmp
+      TMP: /mnt/nextcloud-tmp
+      TEMP: /mnt/nextcloud-tmp
+    secrets:
+      - db_password
+      - nextcloud_admin_password
+      - valkey_password
+      - ovh_s3_key
+      - ovh_s3_secret
+    volumes:
+      - nextcloud_html:/var/www/html
+      - nextcloud_tmp:/mnt/nextcloud-tmp
+      - ./php/uploads.ini:/usr/local/etc/php/conf.d/zz-muminovic-large-uploads.ini:ro
+      - ./config/90-muminovic.config.php:/usr/src/nextcloud/config/90-muminovic.config.php:ro
+    networks:
+      - backend
+
+  cron:
+    image: ${NEXTCLOUD_IMAGE}
+    container_name: muminovic_cloud_cron
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
+      tmp_init:
+        condition: service_completed_successfully
+      app:
+        condition: service_started
+    command: /cron.sh
+    environment:
+      NEXTCLOUD_UPDATE: "1"
+      MYSQL_HOST: db
+      MYSQL_DATABASE: ${NC_DB_NAME}
+      MYSQL_USER: ${NC_DB_USER}
+      MYSQL_PASSWORD_FILE: /run/secrets/db_password
+      NEXTCLOUD_ADMIN_USER: ${NEXTCLOUD_ADMIN_USER}
+      NEXTCLOUD_ADMIN_PASSWORD_FILE: /run/secrets/nextcloud_admin_password
+      NEXTCLOUD_TRUSTED_DOMAINS: ${NEXTCLOUD_HOSTNAME}
+      OVERWRITEHOST: ${NEXTCLOUD_HOSTNAME}
+      OVERWRITEPROTOCOL: https
+      OVERWRITECLIURL: https://${NEXTCLOUD_HOSTNAME}
+      REDIS_HOST: valkey
+      REDIS_HOST_PORT: 6379
+      REDIS_HOST_PASSWORD_FILE: /run/secrets/valkey_password
+      OBJECTSTORE_S3_BUCKET: ${OVH_S3_BUCKET}
+      OBJECTSTORE_S3_REGION: ${OVH_S3_REGION}
+      OBJECTSTORE_S3_HOST: ${OVH_S3_HOST}
+      OBJECTSTORE_S3_PORT: 443
+      OBJECTSTORE_S3_SSL: "true"
+      OBJECTSTORE_S3_USEPATH_STYLE: "false"
+      OBJECTSTORE_S3_AUTOCREATE: "false"
+      OBJECTSTORE_S3_STORAGE_CLASS: STANDARD
+      OBJECTSTORE_S3_KEY_FILE: /run/secrets/ovh_s3_key
+      OBJECTSTORE_S3_SECRET_FILE: /run/secrets/ovh_s3_secret
+      TMPDIR: /mnt/nextcloud-tmp
+      TMP: /mnt/nextcloud-tmp
+      TEMP: /mnt/nextcloud-tmp
+    secrets:
+      - db_password
+      - nextcloud_admin_password
+      - valkey_password
+      - ovh_s3_key
+      - ovh_s3_secret
+    volumes:
+      - nextcloud_html:/var/www/html
+      - nextcloud_tmp:/mnt/nextcloud-tmp
+      - ./php/uploads.ini:/usr/local/etc/php/conf.d/zz-muminovic-large-uploads.ini:ro
+      - ./config/90-muminovic.config.php:/usr/src/nextcloud/config/90-muminovic.config.php:ro
+    networks:
+      - backend
+
+networks:
+  backend:
+    name: muminovic_cloud_backend
+
+volumes:
+  mariadb_data:
+    name: muminovic_cloud_mariadb_data
+  nextcloud_html:
+    name: muminovic_cloud_nextcloud_html
+  nextcloud_tmp:
+    name: muminovic_cloud_nextcloud_tmp
+
+secrets:
+  db_root_password:
+    file: ./secrets/db_root_password.txt
+  db_password:
+    file: ./secrets/db_password.txt
+  nextcloud_admin_password:
+    file: ./secrets/nextcloud_admin_password.txt
+  valkey_password:
+    file: ./secrets/valkey_password.txt
+  ovh_s3_key:
+    file: ./secrets/ovh_s3_key.txt
+  ovh_s3_secret:
+    file: ./secrets/ovh_s3_secret.txt
