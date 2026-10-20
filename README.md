@@ -2,32 +2,44 @@
 
 This project is a fully separate Nextcloud stack for `storage.muminovic.devotus.eu`.
 
+## Updates
+
+Use the project-specific updater documented in [UPDATE.md](UPDATE.md). It is adapted
+for this stack's `app`, `db`, `cron`, `valkey`, and `tmp_init` services and S3
+primary storage; do not use the updater from the separate legacy deployment.
+
 ## Isolation
 
 - Separate compose project name: `muminovic_cloud`
-- Separate containers: `muminovic_cloud_app`, `muminovic_cloud_cron`, `muminovic_cloud_db`, `muminovic_cloud_valkey`
+- Separate containers: `muminovic_cloud_app`, `muminovic_cloud_cron`, `muminovic_cloud_db`, `muminovic_cloud_valkey`, `muminovic_cloud_tmp_init`
 - Separate Docker network: `muminovic_cloud_backend`
 - Separate Docker volumes: `muminovic_cloud_mariadb_data`, `muminovic_cloud_nextcloud_html`, `muminovic_cloud_nextcloud_tmp`
 - Separate host binding: Nextcloud only listens on `127.0.0.1:17880`
 - Separate nginx vhost and separate certificate path for `storage.muminovic.devotus.eu`
 - Separate database, cache, object store bucket, and secrets files
 
-Nothing in this directory reuses the existing `storage.demoncalendar.online` host, its database, its cache, its certificate paths, or its Docker volumes.
+The Compose configuration uses project-specific container, network, and volume names.
 
 ## Object Storage
 
 - Bucket: `muminovic-storage`
-- Access key and secret key were taken from `user-APPayrJrGP8A.txt` and stored in local secret files
+- Access key and secret key are supplied through local secret files
 - The compose file uses Nextcloud's S3 primary object storage support
 - `OBJECTSTORE_S3_AUTOCREATE` is set to `false` so the stack fails fast instead of silently creating the wrong bucket
 
-The only OVH value that was not present in the credential file is the bucket region. `.env` is prefilled for OVH Gravelines (`gra`) because that is the only regional hint available from the reference setup. If the bucket was created in another OVH region, change both `OVH_S3_REGION` and `OVH_S3_HOST` in `.env` before the first start.
+`.env` currently targets OVH Gravelines (`gra`). Before the first start, set both `OVH_S3_REGION` and `OVH_S3_HOST` to the actual region and endpoint of the bucket.
 
 ## Cache Choice
 
 This stack uses Valkey. Nextcloud itself still exposes Redis-compatible configuration knobs (`REDIS_HOST`, `memcache.distributed`, `memcache.locking`), and the official image uses the `phpredis` extension. Valkey is used here as a Redis-protocol-compatible backend.
 
-If you want the officially documented choice instead, replace `${VALKEY_IMAGE}` in `.env` with `redis:7-alpine` and keep the rest of the compose file unchanged.
+To use Redis instead, change `${VALKEY_IMAGE}` and update the Valkey service command and health check to use Redis equivalents (`redis-server` and `redis-cli`). The current Compose file invokes `valkey-server` and `valkey-cli` directly.
+
+## Reverse Proxy and Maintenance
+
+The app and cron services trust proxy requests from `127.0.0.1` and `172.18.0.1` and use `HTTP_X_FORWARDED_FOR` for forwarded client addresses. If the host proxy or Docker gateway address changes, update `TRUSTED_PROXIES` in both services before deployment.
+
+The bundled Nextcloud configuration schedules maintenance work from 01:00 UTC with `maintenance_window_start`.
 
 ## Large Files
 
@@ -49,7 +61,7 @@ I did not hard-code `client_body_temp_path` because that must match the actual h
 
 ## HTTPS Strategy
 
-Do not touch the existing `demoncalendar.online` certificate. Issue a separate Let's Encrypt certificate for `storage.muminovic.devotus.eu` and keep it in its own live path:
+Issue a dedicated Let's Encrypt certificate for `storage.muminovic.devotus.eu` and keep it in its own live path:
 
 - `/etc/letsencrypt/live/storage.muminovic.devotus.eu/fullchain.pem`
 - `/etc/letsencrypt/live/storage.muminovic.devotus.eu/privkey.pem`
@@ -89,21 +101,3 @@ After the certificate exists, renewals can keep using the normal final config be
 5. Replace the bootstrap file with `nginx.conf`, test, and reload nginx.
 6. Start the stack with `docker compose up -d` from this directory.
 7. Check merged runtime config with `docker compose exec -u 33 app php occ config:list system`.
-
-## What Was Done
-
-This is the short version of the actual deployment work performed on the server:
-
-1. Inspected the existing host first: nginx layout, Docker containers, open ports, DNS resolution, and existing certificate paths.
-2. Uploaded this project to the server with `scp` instead of rewriting files through the shell.
-3. Replaced the broken first-attempt nginx config with the bootstrap host config so nginx could reload without requiring a certificate that did not exist yet.
-4. Verified ACME over plain HTTP with a test file under `/var/www/certbot/.well-known/acme-challenge/`.
-5. Issued a separate Let's Encrypt certificate for `storage.muminovic.devotus.eu` with Certbot webroot mode.
-6. Started the new isolated Compose stack and verified it came up on `127.0.0.1:17880`.
-7. Fixed the first startup issue: `90-muminovic.config.php` was originally mounted into `/var/www/html/config`, which left that directory root-owned during first install. The mount was moved to `/usr/src/nextcloud/config`.
-8. Fixed the second startup issue: the dedicated temp volume was not writable by `www-data` on a clean deploy. A one-shot `tmp_init` service was added to set ownership to `33:33` before `app` and `cron` start.
-9. Recreated only the new stack's own containers and volumes after those fixes, then confirmed Nextcloud finished installation and returned `200 OK` on local `status.php`.
-10. Switched nginx to the final TLS config, tested it with `nginx -t`, reloaded nginx, and verified `https://storage.muminovic.devotus.eu/status.php`.
-11. Rechecked the existing `storage.demoncalendar.online` and `demoncalendar.online` endpoints to confirm they still responded after the nginx cutover.
-
-Note: strict `curl` verification on the old demoncalendar certificate chain still reports `unable to get local issuer certificate`. That was pre-existing and was not introduced by this deployment.
