@@ -79,7 +79,7 @@ func (r *Remote) Open(ctx context.Context, local string, images map[string]strin
 	default:
 		return fmt.Errorf("unsupported Linux architecture")
 	}
-	helper := filepath.Join(r.Config.HelperDirectory, "linux-"+arch, "nextcloud-update")
+	helper := filepath.Join(r.Config.HelperDirectory, "linux-"+arch, "muminovic-cloud-update")
 	info, e := os.Stat(helper)
 	if e != nil || !info.Mode().IsRegular() {
 		return fmt.Errorf("Linux helper missing; build the release with go run ./cmd/build")
@@ -95,14 +95,14 @@ func (r *Remote) Open(ctx context.Context, local string, images map[string]strin
 	if _, e = r.invoke(ctx, "scp", args, "upload Go helper and image choices"); e != nil {
 		return e
 	}
-	if _, e = r.shell(ctx, "chmod 700 -- "+Quote(path.Join(r.Directory, "nextcloud-update"))); e != nil {
+	if _, e = r.shell(ctx, "chmod 700 -- "+Quote(path.Join(r.Directory, "muminovic-cloud-update"))); e != nil {
 		return e
 	}
 	r.uploaded = true
 	return nil
 }
 func (r *Remote) call(ctx context.Context, action string, major int, receipt string, out any, extra ...string) error {
-	args := []string{path.Join(r.Directory, "nextcloud-update"), "remote", action, "--compose-dir", r.Config.Root, "--run-dir", r.Directory, "--target", strconv.Itoa(r.Config.Target), "--timeout", strconv.Itoa(int(r.Config.Timeout.Seconds()))}
+	args := []string{path.Join(r.Directory, "muminovic-cloud-update"), "remote", action, "--compose-dir", r.Config.Root, "--run-dir", r.Directory, "--target", strconv.Itoa(r.Config.Target), "--timeout", strconv.Itoa(int(r.Config.Timeout.Seconds()))}
 	if major > 0 {
 		args = append(args, "--major", strconv.Itoa(major))
 	}
